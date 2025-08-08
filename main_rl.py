@@ -2,26 +2,33 @@ import os
 import sys
 import torch
 import pandas as pd
+import numpy as np
+
 
 from env.sei_predictor import SEIPredictor
 from env.cei_predictor import CEIPredictor
 from env.cgcnn_bandgap_ionic_cond_shear_moduli.cgcnn_pretrained import cgcnn_predict
 
+
 from env.cgcnn_bandgap_ionic_cond_shear_moduli.cgcnn_pretrained.cgcnn.model import CrystalGraphConvNet
 from env.cgcnn_bandgap_ionic_cond_shear_moduli.cgcnn_pretrained.cgcnn.data import CIFData, collate_pool
 from env.cgcnn_bandgap_ionic_cond_shear_moduli.main import Normalizer
 
+
 print("Running main_rl.py:", __file__)
+
 
 def run_sei_prediction(cif_file_path: str):
     predictor = SEIPredictor()
     results = predictor.predict_from_cif(cif_file_path)
     return results
 
+
 def run_cei_prediction(cif_file_path: str):
     predictor = CEIPredictor()
     results = predictor.predict_from_cif(cif_file_path)
     return results
+
 
 def run_cgcnn_prediction(model_checkpoint: str, cif_file_path: str):
     """Run CGCNN prediction on a single CIF file"""
@@ -31,6 +38,7 @@ def run_cgcnn_prediction(model_checkpoint: str, cif_file_path: str):
     except Exception as e:
         print(f"Error running CGCNN prediction: {e}")
         return None
+
 
 def run_finetuned_cgcnn_prediction(checkpoint_path: str, dataset_root: str, cif_file_path: str):
     """
@@ -85,6 +93,12 @@ def run_finetuned_cgcnn_prediction(checkpoint_path: str, dataset_root: str, cif_
     model.load_state_dict(checkpoint['state_dict'])
     model.eval()
 
+    # Load Normalizer state for denormalization, if available
+    normalizer = None
+    if 'normalizer' in checkpoint:
+        normalizer = Normalizer(torch.tensor([0.0]))
+        normalizer.load_state_dict(checkpoint['normalizer'])
+
     input_vars = (
         input_data[0].to(device),
         input_data[1].to(device),
@@ -96,12 +110,26 @@ def run_finetuned_cgcnn_prediction(checkpoint_path: str, dataset_root: str, cif_
         output = model(*input_vars)
         pred = output.cpu().numpy().flatten()[0]
 
+    # Denormalize prediction if normalizer is available
+    if normalizer is not None:
+        pred_tensor = torch.tensor([pred])
+        pred_denorm = normalizer.denorm(pred_tensor).item()
+    else:
+        pred_denorm = pred
+
+    # Uncomment below if you used log or log10 transform on target during training
+    # pred_final = np.exp(pred_denorm)        # For natural log
+    # pred_final = 10 ** pred_denorm           # For log10
+    # Otherwise, use pred_denorm directly
+    pred_final = pred_denorm
+
     results = {
         'cif_ids': cif_ids_result,
-        'predictions': [pred],
+        'predictions': [pred_final],
         'mae': checkpoint.get('best_mae_error', None),
     }
     return results
+
 
 def format_cgcnn_prediction_only(results, property_name):
     if results is None:
@@ -117,6 +145,7 @@ def format_cgcnn_prediction_only(results, property_name):
         output += f"Model MAE: {results['mae']:.4f}\n"
 
     return output
+
 
 if __name__ == "__main__":
     cif_path = r"C:\Users\Sasha\OneDrive\vscode\fr8\RL-electrolyte-design\env\cgcnn_bandgap_ionic_cond_shear_moduli\CIF_OBELiX\cifs\test_CIF.cif"
@@ -159,7 +188,7 @@ if __name__ == "__main__":
         print(f"CGCNN Shear Moduli prediction failed: {e}")
 
     try:
-        finetuned_checkpoint_path = r"C:\Users\Sasha\OneDrive\vscode\fr8\RL-electrolyte-design\env\cgcnn_bandgap_ionic_cond_shear_moduli\model_best.pth.tar"
+        finetuned_checkpoint_path = r"C:\Users\Sasha\OneDrive\vscode\fr8\RL-electrolyte-design\env\checkpoint.pth.tar"
         finetuned_results = run_finetuned_cgcnn_prediction(finetuned_checkpoint_path, dataset_root, cif_path)
     except Exception as e:
         finetuned_results = None
@@ -190,7 +219,6 @@ if __name__ == "__main__":
 
     print()
 
-    print(format_cgcnn_prediction_only(bandgap_results, "Bandgap"))
     print(format_cgcnn_prediction_only(bandgap_results, "Bandgap"))
     print()
     print(format_cgcnn_prediction_only(shear_results, "Shear Moduli"))
